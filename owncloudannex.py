@@ -61,7 +61,8 @@ def postFile(subject, filename, folder):
                 post_data.append((name, val))
 
     post_data.append(("dir", folder))
-    files = [("files[]", subject, readFile(filename))]
+    temp = readFile(filename, "rb")
+    files = [("files[]", subject, temp)]
 
     tcookie = common.getCookieInfoAsHTML()
     cookie = ""
