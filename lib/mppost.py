@@ -37,8 +37,6 @@ def encode_multipart_formdata(fields, files):
         L.append(value)
     L.append('--' + LIMIT + '--')
     L.append('')
-    test = "".join(L)
-    test2 = b"".join(L)
     body = CRLF.join(L)
     content_type = 'multipart/form-data; boundary=%s' % LIMIT
     return content_type, body
