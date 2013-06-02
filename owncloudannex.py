@@ -210,13 +210,13 @@ def main():
         envargs += ["ANNEX_KEY=" + ANNEX_KEY]
     if ANNEX_HASH_1:
         envargs += ["ANNEX_HASH_1=" + ANNEX_HASH_1]
+        ANNEX_HASH_1 = ANNEX_HASH_1 + "-"
     if ANNEX_HASH_2:
         envargs += ["ANNEX_HASH_2=" + ANNEX_HASH_2]
+        ANNEX_HASH_2 = ANNEX_HASH_2 + "-"
     if ANNEX_FILE:
         envargs += ["ANNEX_FILE=" + ANNEX_FILE]
     common.log("ARGS: " + repr(" ".join(envargs + args)))
-    ANNEX_HASH_1 = ANNEX_HASH_1 + "-"
-    ANNEX_HASH_2 = ANNEX_HASH_2 + "-"
 
     conf = readFile(pwd + "/owncloudannex.conf")
     try:
@@ -258,7 +258,7 @@ def main():
     if folder:
         common.log("Using folder1: " + repr(folder))
         ANNEX_FOLDER = folder + "/"
-    else:
+    elif ANNEX_HASH_1:
         folder = createFolder(ANNEX_FOLDER + "/" + ANNEX_HASH_1)
         common.log("created folder1: " + repr(folder))
         ANNEX_FOLDER = folder + "/"
@@ -267,7 +267,7 @@ def main():
     if folder:
         common.log("Using folder2: " + repr(folder))
         ANNEX_FOLDER = folder + "/"
-    else:
+    elif ANNEX_HASH_2:
         folder = createFolder(ANNEX_FOLDER + "/" + ANNEX_HASH_2)
         common.log("created folder2: " + repr(folder))
         ANNEX_FOLDER = folder + "/"
@@ -284,9 +284,15 @@ def main():
         if changed:
             saveFile(pwd + "/owncloudannex.conf", json.dumps(conf))
             common.log("saving owncloudannex.conf file.")
-        else:
-            common.log("ERROR")
-            sys.exit(1)
+        setup = '''
+Please run the following commands in your annex directory:
+
+git config annex.flickr-hook '/usr/bin/python2 %s/flickrannex.py'
+git annex initremote flickr type=hook hooktype=flickr encryption=%s
+git annex describe flickr "the flickr library"
+''' % (os.getcwd(), "shared")
+        print setup
+        sys.exit(1)
 
 t = time.time()
 common.log("START")
