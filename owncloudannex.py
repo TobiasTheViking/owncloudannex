@@ -287,9 +287,9 @@ def main():
         setup = '''
 Please run the following commands in your annex directory:
 
-git config annex.flickr-hook '/usr/bin/python2 %s/flickrannex.py'
-git annex initremote flickr type=hook hooktype=flickr encryption=%s
-git annex describe flickr "the flickr library"
+git config annex.owncloud-hook '/usr/bin/python2 %s/owncloudannex.py'
+git annex initremote owncloud type=hook hooktype=owncloud encryption=%s
+git annex describe owncloud "the owncloud library"
 ''' % (os.getcwd(), "shared")
         print setup
         sys.exit(1)
