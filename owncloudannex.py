@@ -238,34 +238,35 @@ def main():
         common.log("webdav url set to: " + conf["url"], 3)
         changed = True
 
-    login(conf["uname"], conf["pword"])
+    if ANNEX_HASH_1 and ANNEX_HASH_2:
+        login(conf["uname"], conf["pword"])
     
-    folder = findInFolder(conf["folder"])
-    if folder:
-        common.log("Using folder: " + repr(folder))
-        ANNEX_FOLDER = folder + "/"
-    else:
-        folder = createFolder("/" + conf["folder"])
-        common.log("created folder0: " + repr(folder))
-        ANNEX_FOLDER = folder + "/"
+        folder = findInFolder(conf["folder"])
+        if folder:
+            common.log("Using folder: " + repr(folder))
+            ANNEX_FOLDER = folder + "/"
+        else:
+            folder = createFolder("/" + conf["folder"])
+            common.log("created folder0: " + repr(folder))
+            ANNEX_FOLDER = folder + "/"
 
-    folder = findInFolder(ANNEX_HASH_1, ANNEX_FOLDER)
-    if folder:
-        common.log("Using folder1: " + repr(folder))
-        ANNEX_FOLDER = folder + "/"
-    elif ANNEX_HASH_1:
-        folder = createFolder(ANNEX_FOLDER + "/" + ANNEX_HASH_1)
-        common.log("created folder1: " + repr(folder))
-        ANNEX_FOLDER = folder + "/"
-
-    folder = findInFolder(ANNEX_HASH_2, ANNEX_FOLDER)
-    if folder:
-        common.log("Using folder2: " + repr(folder))
-        ANNEX_FOLDER = folder + "/"
-    elif ANNEX_HASH_2:
-        folder = createFolder(ANNEX_FOLDER + "/" + ANNEX_HASH_2)
-        common.log("created folder2: " + repr(folder))
-        ANNEX_FOLDER = folder + "/"
+        folder = findInFolder(ANNEX_HASH_1, ANNEX_FOLDER)
+        if folder:
+            common.log("Using folder1: " + repr(folder))
+            ANNEX_FOLDER = folder + "/"
+        elif ANNEX_HASH_1:
+            folder = createFolder(ANNEX_FOLDER + "/" + ANNEX_HASH_1)
+            common.log("created folder1: " + repr(folder))
+            ANNEX_FOLDER = folder + "/"
+        
+        folder = findInFolder(ANNEX_HASH_2, ANNEX_FOLDER)
+        if folder:
+            common.log("Using folder2: " + repr(folder))
+            ANNEX_FOLDER = folder + "/"
+        elif ANNEX_HASH_2:
+            folder = createFolder(ANNEX_FOLDER + "/" + ANNEX_HASH_2)
+            common.log("created folder2: " + repr(folder))
+            ANNEX_FOLDER = folder + "/"
 
     if "store" == ANNEX_ACTION:
         postFile(ANNEX_KEY, ANNEX_FILE, ANNEX_FOLDER)
