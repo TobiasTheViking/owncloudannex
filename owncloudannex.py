@@ -88,7 +88,7 @@ def findInFolder(subject, folder="/"):
     for tmp_file in common.parseDOM(content, "d:href"):
         tmp_file = urllib.unquote_plus(tmp_file)
         tmp_path = (base + folder +  subject).replace("//", "/")
-        common.log("folder: " + tmp_file + " - " + tmp_path)
+        common.log("folder: " + tmp_file + " - " + tmp_path, 3)
         if tmp_file == tmp_path or tmp_file == tmp_path + "/":
             tmp_file = folder + subject
             common.log("Done: " + repr(tmp_file))
@@ -281,6 +281,12 @@ git annex describe owncloud "the owncloud library"
         sys.exit(1)
 
 t = time.time()
+if dbglevel > 0:
+    if "--stderr" in sys.argv:
+        sys.stderr.write("\n")
+    else:
+        print("")
+
 common.log("START")
 if __name__ == '__main__':
     main()
