@@ -7,7 +7,7 @@ Hook program for gitannex to use owncloud as backend
 
     python2
 
-Credit for the Owncloud api interface goes to me.
+Credit for the webdav api interface goes to https://launchpad.net/python-webdav-lib
 
 # Install
 Clone the git repository in your home folder.

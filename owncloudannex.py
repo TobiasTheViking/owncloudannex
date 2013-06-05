@@ -4,6 +4,7 @@ import re
 import sys
 import json
 import time
+import base64
 import inspect
 import webbrowser
 import cookielib
@@ -19,12 +20,7 @@ if not pwd:
     pwd = os.getcwd()
 sys.path.append(pwd + '/lib')
 
-import mppost
-#import MultipartPostHandler
-cookiejar = cookielib.LWPCookieJar()
-cookie_handler = urllib2.HTTPCookieProcessor(cookiejar)
-opener = urllib2.build_opener(cookie_handler)
-#opener = urllib2.build_opener(cookie_handler, MultipartPostHandler.MultipartPostHandler)
+import davlib
 
 if "--dbglevel" in sys.argv:
     dbglevel = int(sys.argv[sys.argv.index("--dbglevel") + 1])
@@ -32,12 +28,23 @@ else:
     dbglevel = 0
 
 import CommonFunctions as common
+client = False
+encAuth = False
 
 def login(user, pword):
     common.log("")
-    res = common.fetchPage({"link": conf["url"]})
-    res = common.fetchPage({"link": conf["url"], "post_data": {"user": user, "password": pword, "remember_login": "1"}})
-    common.log("res: " + repr(res["content"]), 3)
+    global client, encAuth
+    
+    base = conf["url"]
+    base = base[base.find("//") + 2: base.find("/", 8)]
+    encAuth = {"Authorization": "Basic %s" % ( base64.encodestring(user+":"+pword).strip() ) }
+    common.log("Using base: " + base + " - " +  repr(encAuth))
+    client = davlib.DAV(base, protocol="https")
+    client.set_debuglevel(0)
+
+    common.log("res: " + repr(client), 0)
+
+    return True
     if len(common.parseDOM(res["content"], "form", attrs={"id": "data-upload-form"})) > 0:
         common.log("Done")
     else:
@@ -51,51 +58,39 @@ def postFile(subject, filename, folder):
     if tmp_file:
         common.log("File already exists: " + repr(tmp_file))
         return True
-    common.log("BLA: " + repr(folder) + " - " + repr(filename))
-    res = common.fetchPage({"link": conf["url"]})
-    #post_data = {"user": user, "password": pword}
-    post_data = []
-    for name in common.parseDOM(res["content"], "input", ret="name"):
-        if name != "dir":
-            for val in common.parseDOM(res["content"], "input", attrs={"name": name}, ret="value"):
-                post_data.append((name, val))
 
-    post_data.append(("dir", folder))
-    temp = readFile(filename, "rb")
-    files = [("files[]", subject, temp)]
-
-    tcookie = common.getCookieInfoAsHTML()
-    cookie = ""
-    tcookie = tcookie.replace("None", "'None'")
-    common.log("cookies: " + repr(tcookie))
-    for name in common.parseDOM(tcookie, "cookie", ret="name"):
-        for val in common.parseDOM(tcookie, "cookie", attrs={"name": name}, ret="value"):
-            cookie += "%s=%s; " % (name, val)
-    cookie = cookie[:len(cookie) - 2]
-    common.log("cookies: " + repr(cookie))
-    res = mppost.post_multipart(conf["url"].replace("http://", "").replace("https://", "").replace("/", ":443"), "/?app=files&getfile=ajax%2Fupload.php", post_data, files, ssl=True, cookie=cookie)
-    common.log("res: " + repr(res), 0)
-    res = json.loads(res[1 : len(res) -1])
-    if res["status"] == "success" and res["name"] == subject:
-        common.log("Done: " + repr(res))
-        return True
-    else:
-        sys.exit(1)
+    base = conf["url"][conf["url"].find("/", 8):]
+    tpath = ("%s%s%s" % (base, folder, subject)).replace("//", "/")
+    common.log("tpath: " + repr(tpath))
+    response = False
+    with open(filename, "rb") as fh:
+        response = client.put(tpath, fh, "application/octet-stream", None, encAuth)
+        
+    if response:
+        cont = response.read()
+        if response.status == 201:
+            common.log("Done: " + repr(cont))
+            return True
+    common.log("Failure")
+    sys.exit(1)
 
 def findInFolder(subject, folder="/"):
     common.log("%s(%s) - %s(%s)" % (repr(subject), type(subject), repr(folder), type(folder)), 0)
-    res = common.fetchPage({"link": conf["url"] + "?app=files&dir=" + folder})
-    common.log("res: " + repr(res["content"]), 3)
-    listing = common.parseDOM(res["content"], "tbody", attrs={"id": "fileList"})
-    common.log("Listing: " + repr(listing), 3)
     if folder[0] != "/":
         folder = "/" + folder
+    base = conf["url"][conf["url"].find("/", 8):]
+    tpath = (base + folder).replace("//", "/")
+    tpath = tpath[:len(tpath)-1]
+    common.log("propfind: " + tpath)
+    bla = client.propfind(tpath, depth=1, extra_hdrs=encAuth)
+    content = bla.read()
 
-    for tmp_file in common.parseDOM(listing, "tr", ret="data-file"):
+    for tmp_file in common.parseDOM(content, "d:href"):
         tmp_file = urllib.unquote_plus(tmp_file)
-        common.log("folder: " + tmp_file)
-        if tmp_file == subject:
-            tmp_file = folder + tmp_file
+        tmp_path = (base + folder +  subject).replace("//", "/")
+        common.log("folder: " + tmp_file + " - " + tmp_path)
+        if tmp_file == tmp_path or tmp_file == tmp_path + "/":
+            tmp_file = folder + subject
             common.log("Done: " + repr(tmp_file))
             return tmp_file
     common.log("Failure")
@@ -117,13 +112,17 @@ def getFile(subject, filename, folder):
 
     tmp_file = findInFolder(subject, folder)
     if tmp_file:
+        base = conf["url"][conf["url"].find("/", 8):]
+        tmp_file = (base + tmp_file).replace("//", "/")
         common.log("tmp_file: " + repr(tmp_file))
-        res = common.fetchPage({"link": "%s?app=files&getfile=ajax/download.php&files=%s&dir=%s" % (conf["url"], subject, folder)})
-        saveFile(filename, res["content"], "wb")
-        common.log("Done")
-        return True
+        response = client.get(tmp_file, encAuth)
+        if response.status == 200:
+            cont = response.read()
+            common.log("Got data: " + repr(len(cont)))
+            saveFile(filename, cont, "wb")
+            common.log("Done")
+            return True
     common.log("Failure")
-
 
 def deleteFile(subject, folder):
     common.log(subject)
@@ -132,15 +131,11 @@ def deleteFile(subject, folder):
     tmp_file = findInFolder(subject, folder)
 
     if tmp_file:
-        res = common.fetchPage({"link": conf["url"]})
-        requesttoken = common.parseDOM(res["content"], "input", attrs={"name": "requesttoken"}, ret="value")
-        folder = folder[:len(folder)-1]
-        # Important. Needs to recieve " instead of '. Hacked in common.
-        res = common.fetchPage({"link": "%s?app=files&getfile=ajax/delete.php" % (conf["url"]), "post_data": {"dir": folder, "files": [subject], "requesttoken": requesttoken[0]}})
-        common.log(repr(res))
-        res = json.loads(res["content"])
-        if len(res["data"]["files"]) > 0:
-            common.log("Done")
+        base = conf["url"][conf["url"].find("/", 8):]
+        response = client.delete(base + tmp_file, encAuth)
+        common.log("response: " + repr(response))
+        if response.status == 204:
+            common.log("Done: " + repr(response.read()))
             return True
     common.log("Failure")
 
@@ -176,23 +171,15 @@ def createFolder(path):
     else:
         folder = "/"
         name = path
-    common.log("BLA: " + repr(folder) + " - " + repr(name))
-    res = common.fetchPage({"link": conf["url"]})
-    requesttoken = common.parseDOM(res["content"], "input", attrs={"name": "requesttoken"}, ret="value")
-
-    res = common.fetchPage({"link": conf["url"] + "?app=files&getfile=ajax/newfolder.php", "post_data": {"dir": folder, "foldername": name, "requesttoken": "".join(requesttoken)}})
-    common.log("res: " + repr(res["content"]), 0)
-    listing = common.parseDOM(res["content"], "tbody", attrs={"id": "fileList"})
-    common.log("Listing: " + repr(listing))
-    
-    for tmp_file in common.parseDOM(listing, "tr", ret="data-file"):
-        tmp_file = urllib.unquote_plus(tmp_file)
-        common.log("folder: " + tmp_file)
-        if tmp_file == subject:
-            common.log("Done: " + repr(tmp_file))
-            return tmp_file
-    common.log(res)
-    return path
+    base = conf["url"][conf["url"].find("/", 8):]
+    tpath = (base + path + "/").replace("//", "/")
+    res = client.mkcol(tpath, encAuth)
+    content = res.read()
+    if res.status == 201:
+        common.log("Done: " + repr(res.status) + " - " + repr(content))
+        return path
+    common.log("Failure: " + repr(res.status) + " - " + repr(content))
+    sys.exit(1)
 
 def main():
     global conf
@@ -239,8 +226,8 @@ def main():
         changed = True
 
     if "url" not in conf:
-        conf["url"] = raw_input("Please enter your owncloud url: ")
-        common.log("url set to: " + conf["url"], 3)
+        conf["url"] = raw_input("Please enter your webdav url: ")
+        common.log("webdav url set to: " + conf["url"], 3)
         changed = True
 
     login(conf["uname"], conf["pword"])
@@ -281,9 +268,8 @@ def main():
     elif "remove" == ANNEX_ACTION:
         deleteFile(ANNEX_KEY, ANNEX_FOLDER)
     else:
-        if changed:
-            saveFile(pwd + "/owncloudannex.conf", json.dumps(conf))
-            common.log("saving owncloudannex.conf file.")
+        saveFile(pwd + "/owncloudannex.conf", json.dumps(conf))
+        common.log("saving owncloudannex.conf file.")
         setup = '''
 Please run the following commands in your annex directory:
 
