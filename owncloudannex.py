@@ -78,15 +78,18 @@ def findInFolder(subject, folder="/"):
     common.log("%s(%s) - %s(%s)" % (repr(subject), type(subject), repr(folder), type(folder)), 0)
     if folder[0] != "/":
         folder = "/" + folder
+    host = conf["url"][:conf["url"].find("/", 8)]
     base = conf["url"][conf["url"].find("/", 8):]
     tpath = (base + folder).replace("//", "/")
     tpath = tpath[:len(tpath)-1]
-    common.log("propfind: " + tpath)
     bla = client.propfind(tpath, depth=1, extra_hdrs=encAuth)
     content = bla.read()
+    content = content.replace("<D:", "<d:").replace("</D:", "</d:") # Box.com fix
+    common.log("propfind: " + tpath + " - " + repr(content))
 
     for tmp_file in common.parseDOM(content, "d:href"):
         tmp_file = urllib.unquote_plus(tmp_file)
+        tmp_file = tmp_file.replace(host, "")
         tmp_path = (base + folder +  subject).replace("//", "/")
         common.log("folder: " + tmp_file + " - " + tmp_path, 3)
         if tmp_file == tmp_path or tmp_file == tmp_path + "/":
@@ -205,7 +208,12 @@ def main():
         envargs += ["ANNEX_FILE=" + ANNEX_FILE]
     common.log("ARGS: " + repr(" ".join(envargs + args)))
 
-    conf = readFile(pwd + "/owncloudannex.conf")
+    
+    if "-c" in sys.argv:
+        conf = readFile(sys.argv[sys.argv.index("-c") + 1])
+    else:
+        conf = readFile(pwd + "/owncloudannex.conf")
+
     try:
         conf = json.loads(conf)
     except Exception as e:
