@@ -12,7 +12,7 @@ import urllib
 import urllib2
 
 conf = False
-version = "0.1.0"
+version = "0.1.1"
 plugin = "owncloudannex-" + version
 
 pwd = os.path.dirname(__file__)
