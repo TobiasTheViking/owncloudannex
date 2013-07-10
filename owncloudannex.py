@@ -12,7 +12,7 @@ import urllib
 import urllib2
 
 conf = False
-version = "0.1.1"
+version = "0.1.2"
 plugin = "owncloudannex-" + version
 
 pwd = os.path.dirname(__file__)
@@ -42,13 +42,12 @@ def login(user, pword):
     client = davlib.DAV(base, protocol="https")
     client.set_debuglevel(0)
 
-    common.log("res: " + repr(client), 0)
-
-    return True
-    if len(common.parseDOM(res["content"], "form", attrs={"id": "data-upload-form"})) > 0:
+    test = client.propfind("/remote.php/webdav", depth=1, extra_hdrs=encAuth)
+    test = test.read().replace("<D:", "<d:").replace("</D:", "</d:") # Box.com fix
+    if test.find("d:error") == -1:
         common.log("Done")
     else:
-        common.log("Failure")
+        print("Failure, couldn't properly login: " + test)
         sys.exit(1)
 
 def postFile(subject, filename, folder):
