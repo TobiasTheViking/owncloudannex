@@ -17,10 +17,10 @@ Clone the git repository in your home folder.
 This should make a ~/owncloudannex folder
 
 # Setup
-Run the program once to set it up.
+Copy git-annex-remote-owncloud to your PATH
 
-    cd ~/owncloudannex; python2 owncloudannex.py
+    cd ~/owncloudannex; sudo cp git-annex-remote-owncloud /usr/local/bin
 
 # Commands for gitannex:
 
-    git annex initremote test1owncloud type=external externaltype=owncloudannex encryption=none
+    git annex initremote owncloud type=external externaltype=owncloud encryption=shared
