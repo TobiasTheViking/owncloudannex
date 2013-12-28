@@ -1,3 +1,6 @@
+# Version 0.2.0
+  - Updated to external special remote protocol
+
 # Version 0.1.2
   - Verify login was successfull
 

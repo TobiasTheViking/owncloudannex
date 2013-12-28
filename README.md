@@ -17,9 +17,9 @@ Clone the git repository in your home folder.
 This should make a ~/owncloudannex folder
 
 # Setup
-Copy git-annex-remote-owncloud to your PATH
+Link git-annex-remote-owncloud to your PATH
 
-    cd ~/owncloudannex; sudo cp git-annex-remote-owncloud /usr/local/bin
+    cd ~/owncloudannex; sudo ln -sf `pwd`/git-annex-remote-owncloud /usr/local/bin
 
 # Commands for gitannex:
 
