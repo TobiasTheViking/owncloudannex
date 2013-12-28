@@ -1,0 +1,331 @@
+#!/usr/bin/env python2
+import os
+import re
+import sys
+import json
+import time
+import base64
+import inspect
+import webbrowser
+import urllib
+import urllib2
+import select
+
+conf = False
+version = "0.2.0"
+plugin = "owncloudannex-" + version
+
+pwd = os.path.realpath(os.path.dirname(__file__))
+pwd = os.path.realpath(os.path.join(pwd, "git-annex-remote-owncloudannex"))
+pwd = pwd.replace("git-annex-remote-owncloudannex.py", "")
+pwd = pwd.replace("git-annex-remote-owncloudannex", "")
+sys.stderr.write("Path: " + repr(pwd) + "\n")
+
+sys.path.append(pwd + '/lib')
+
+import davlib
+
+if "--dbglevel" in sys.argv:
+    dbglevel = int(sys.argv[sys.argv.index("--dbglevel") + 1])
+else:
+    dbglevel = 10
+
+import CommonFunctions as common
+client = False
+encAuth = False
+
+def login(user, pword):
+    common.log("")
+    global client, encAuth
+    
+    base = conf["url"]
+    base = base[base.find("//") + 2: base.find("/", 8)]
+    encAuth = {"Authorization": "Basic %s" % ( base64.encodestring(user+":"+pword).strip() ) }
+    common.log("Using base: " + base + " - " +  repr(encAuth))
+    client = davlib.DAV(base, protocol="https")
+    client.set_debuglevel(0)
+
+    test = client.propfind("/remote.php/webdav", depth=1, extra_hdrs=encAuth)
+    test = test.read().replace("<D:", "<d:").replace("</D:", "</d:") # Box.com fix
+    if test.find("d:error") == -1:
+        common.log("Done")
+        return True
+    else:
+        common.log("Failure, couldn't properly login: " + test, 1)
+        return False
+
+def postFile(subject, filename, folder):
+    common.log("%s to %s - %s" % ( filename, folder[0], subject))
+    
+    tmp_file = findInFolder(subject, folder)
+    if tmp_file:
+        common.log("File already exists: " + repr(tmp_file))
+        return True
+
+    base = conf["url"][conf["url"].find("/", 8):]
+    tpath = ("%s%s%s" % (base, folder, subject)).replace("//", "/")
+    common.log("tpath: " + repr(tpath))
+    response = False
+    with open(filename, "rb") as fh:
+        response = client.put(tpath, fh, "application/octet-stream", None, encAuth)
+        #  Hook in stdout "PROGRESS bytes"
+
+    if response:
+        cont = response.read()
+        if response.status == 201:
+            common.log("Done: " + repr(cont))
+            return True
+    common.log("Failure")
+    return False
+
+def findInFolder(subject, folder="/"):
+    common.log("%s(%s) - %s(%s)" % (repr(subject), type(subject), repr(folder), type(folder)), 0)
+    if folder[0] != "/":
+        folder = "/" + folder
+    host = conf["url"][:conf["url"].find("/", 8)]
+    base = conf["url"][conf["url"].find("/", 8):]
+    tpath = (base + folder).replace("//", "/")
+    tpath = tpath[:len(tpath)-1]
+    bla = client.propfind(tpath, depth=1, extra_hdrs=encAuth)
+    content = bla.read()
+    content = content.replace("<D:", "<d:").replace("</D:", "</d:") # Box.com fix
+    common.log("propfind: " + tpath + " - " + repr(content))
+
+    for tmp_file in common.parseDOM(content, "d:href"):
+        tmp_file = urllib.unquote_plus(tmp_file)
+        tmp_file = tmp_file.replace(host, "")
+        tmp_path = (base + folder +  subject).replace("//", "/")
+        common.log("folder: " + tmp_file + " - " + tmp_path, 3)
+        if tmp_file == tmp_path or tmp_file == tmp_path + "/":
+            tmp_file = folder + subject
+            common.log("Done: " + repr(tmp_file))
+            return tmp_file
+    common.log("Failure")
+
+def checkFile(subject, folder):
+    common.log(subject)
+    global m
+
+    tmp_file = findInFolder(subject, folder)
+    if tmp_file:
+        common.log("Found: " + repr(tmp_file))
+    else:
+        common.log("Failure")
+    return tmp_file
+
+def getFile(subject, filename, folder):
+    common.log(subject)
+    global m
+
+    tmp_file = findInFolder(subject, folder)
+    if tmp_file:
+        base = conf["url"][conf["url"].find("/", 8):]
+        tmp_file = (base + tmp_file).replace("//", "/")
+        common.log("tmp_file: " + repr(tmp_file))
+        response = client.get(tmp_file, encAuth)
+        if response.status == 200:
+            cont = response.read()
+            common.log("Got data: " + repr(len(cont)))
+            saveFile(filename, cont, "wb")
+            common.log("Done")
+            return True
+    common.log("Failure")
+    return False
+
+def deleteFile(subject, folder):
+    common.log(subject)
+    global m
+
+    tmp_file = findInFolder(subject, folder)
+
+    if tmp_file:
+        base = conf["url"][conf["url"].find("/", 8):]
+        response = client.delete(base + tmp_file, encAuth)
+        common.log("response: " + repr(response))
+        if response.status == 204:
+            common.log("Done: " + repr(response.read()))
+            return True
+    common.log("Failure")
+    return False
+
+def readFile(fname, flags="r"):
+    common.log(repr(fname) + " - " + repr(flags))
+
+    if not os.path.exists(fname):
+        common.log("File doesn't exist")
+        return False
+    d = ""
+    try:
+        t = open(fname, flags)
+        d = t.read()
+        t.close()
+    except Exception as e:
+        common.log("Exception: " + repr(e), -1)
+
+    common.log("Done")
+    return d
+
+def saveFile(fname, content, flags="w"):
+    common.log(fname + " - " + str(len(content)) + " - " + repr(flags))
+    t = open(fname, flags)
+    t.write(content)
+    t.close()
+    common.log("Done")
+
+def createFolder(path):
+    common.log(path)
+    if path.find("/") > -1:
+        folder = path[:path.rfind("/")]
+        name = path[path.rfind("/") + 1:]
+    else:
+        folder = "/"
+        name = path
+    base = conf["url"][conf["url"].find("/", 8):]
+    tpath = (base + path + "/").replace("//", "/")
+    res = client.mkcol(tpath, encAuth)
+    content = res.read()
+    if res.status == 201:
+        common.log("Done: " + repr(res.status) + " - " + repr(content))
+        return path
+    common.log("Failure: " + repr(res.status) + " - " + repr(content))
+
+def sprint(txt):
+    sys.stdout.write(txt + "\n")
+    sys.stdout.flush()
+
+def setFolder(base, keys):
+    common.log(repr(base) + " - " + repr(keys))
+    folder = findInFolder(base)
+    keys = keys.replace("VALUE ", "").split("/")
+    common.log("BLA2: " + repr(base) + " - " + repr(keys))
+    if folder:
+        common.log("Using folder: " + repr(folder))
+        ANNEX_FOLDER = folder + "/"
+    else:
+        folder = createFolder("/" + base)
+        common.log("created folder0: " + repr(folder))
+        ANNEX_FOLDER = folder + "/"
+
+    folder = findInFolder(keys[0], ANNEX_FOLDER)
+    if folder:
+        common.log("Using folder1: " + repr(folder))
+        ANNEX_FOLDER = folder + "/"
+    elif keys[0]:
+        folder = createFolder(ANNEX_FOLDER + "/" + keys[0])
+        common.log("created folder1: " + repr(folder))
+        ANNEX_FOLDER = folder + "/"
+
+    folder = findInFolder(keys[1], ANNEX_FOLDER)
+
+    if folder:
+        common.log("Using folder2: " + repr(folder))
+        ANNEX_FOLDER = folder + "/"
+    elif keys[1]:
+        folder = createFolder(ANNEX_FOLDER + "/" + keys[1])
+        common.log("created folder2: " + repr(folder))
+        ANNEX_FOLDER = folder + "/"
+    return ANNEX_FOLDER
+
+def main():
+    global conf
+    conf = {}
+    args = sys.argv
+    common.log("ARGS: " + repr(" ".join(args)))
+
+    sprint("VERSION 1")
+
+    line = "initial"
+    while len(line):
+        line = sys.stdin.readline()
+	if line:
+            line = line.strip().replace("\n", "").split(" ")
+            if len(line) == 0:
+                common.log("Error, got empty line")
+                continue
+
+            if line[0] == "INITREMOTE":
+                uname = os.getenv("MYLOGIN") or ""
+                pword = os.getenv("MYPASSWORD") or ""
+                url = os.getenv("MYURL") or ""
+                myfolder = os.getenv("MYFOLDER") or ""
+                if len(uname) and len(pword) and len(url) and len(myfolder):
+                    sprint('SETCREDS mycreds ' + uname + ' ' + pword)
+                    sprint('SETCONFIG url ' + url + '')
+                    sprint('SETCONFIG myfolder ' + myfolder + '')
+                    sprint('INITREMOTE-SUCCESS')
+                else:
+                    sprint('INITREMOTE-FAILURE "You need to set MYPASSWORD, MYLOGIN and MYURL, MYFOLDER environment variables when running initremote."')
+                    sys.exit(1)
+            elif line[0] == "PREPARE":
+                # Use GETCONFIG to get configuration settings,
+                # and do anything needed to get ready for using the
+                # special remote here.
+                sprint('GETCREDS mycreds')
+                creds = sys.stdin.readline().replace("\n", "")
+                creds = creds.split(" ")
+                common.log("Got creds: " + repr(creds))
+
+                sprint('GETCONFIG url')
+                url = sys.stdin.readline().replace("\n", "")
+                url = url.split(" ")
+                common.log("Got url: " + repr(url))
+
+                sprint('GETCONFIG myfolder')
+                myfolder = sys.stdin.readline().replace("\n", "")
+                myfolder = myfolder.split(" ")
+                common.log("Got myfolder: " + repr(myfolder))
+
+                if len(creds) > 2 and len(url) > 1 and len(myfolder) > 1:
+                    conf["uname"] = creds[1]
+                    conf["pword"] = creds[2]
+                    conf["url"] = url[1]
+                    conf["folder"] = myfolder[1]
+                    if login(conf["uname"], conf["pword"]):
+                        sprint('PREPARE-SUCCESS')
+                    else:
+                        sprint('PREPARE-FAILURE')
+                else:
+                    sprint('PREPARE-FAILURE')
+            elif line[0] == "TRANSFER":
+                sprint("DIRHASH " + line[2])
+                folder = setFolder(conf["folder"], sys.stdin.readline().replace("\n", ""))
+
+                if line[1] == "STORE":
+                    common.log("BLA: " + repr(line))
+                    if postFile(line[2], line[3], folder):
+                        sprint('TRANSFER-SUCCESS STORE ' + line[2] + '')
+                    else:
+                        sprint('TRANSFER-FAILURE STORE ' + line[2] + ' File could not be stored')
+                if line[1] == "RETRIEVE":
+                    common.log("BLA: " + repr(line))
+                    if getFile(line[2], line[3], folder):
+                        sprint('TRANSFER-SUCCESS RETRIEVE ' + line[2] + '')
+                    else:
+                        sprint('TRANSFER-FAILURE RETRIEVE ' + line[2] + ' File could not be retrieved')
+            elif line[0] == "CHECKPRESENT":
+                sprint("DIRHASH " + line[1])
+                folder = setFolder(conf["folder"], sys.stdin.readline().replace("\n", ""))
+                if not len(folder):
+                    sprint('CHECKPRESENT-UNKNOWN ' + line[1] + ' this remote is not currently available')
+                    continue
+
+                if checkFile(line[1], folder):
+                    sprint('CHECKPRESENT-SUCCESS ' + line[1] + '')
+                else:
+                    sprint('CHECKPRESENT-FAILURE ' + line[1] + '')
+            elif line[0] == "REMOVE":
+                sprint("DIRHASH " + line[1])
+                folder = setFolder(conf["folder"], sys.stdin.readline().replace("\n", ""))
+
+                if deleteFile(line[1], folder):
+                    sprint('REMOVE-SUCCESS ' + line[1] + '')
+                else:
+                    sprint('REMOVE-FAILURE ' + line[1] + ' This file could not be removed')
+            else:
+                sprint('UNSUPPORTED-REQUEST')
+
+t = time.time()
+common.log("START")
+if __name__ == '__main__':
+    main()
+common.log("STOP: %ss" % int(time.time() - t))

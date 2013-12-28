@@ -23,6 +23,4 @@ Run the program once to set it up.
 
 # Commands for gitannex:
 
-    git config annex.owncloud-hook '/usr/bin/python2 ~/owncloudannex/owncloudannex.py'
-    git annex initremote owncloud type=hook hooktype=owncloud encryption=shared
-    git annex describe owncloud "the owncloud library"
+    git annex initremote test1owncloud type=external externaltype=owncloudannex encryption=none

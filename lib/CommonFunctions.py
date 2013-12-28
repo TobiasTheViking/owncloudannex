@@ -290,7 +290,5 @@ def log(description, level=0):
             data = " %s [%s] %s : '%s'" % (timestamp, plugin, inspect.stack()[1][3], description)
         except:
             data = " FALLBACK %s [%s] %s : '%s'" % (timestamp, plugin, inspect.stack()[1][3], repr(description))
-        if "--stderr" in sys.argv:
-            sys.stderr.write(data + "\n")
-        else:
-            print(data)
+
+        sys.stderr.write(data + "\n")
