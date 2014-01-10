@@ -1,4 +1,5 @@
 #!/usr/bin/env python2
+import io
 import os
 import re
 import sys
@@ -11,26 +12,25 @@ import urllib
 import urllib2
 import select
 
-conf = False
+try:
+    dbglevel = int(os.getenv("DBGLEVEL") or 0)
+except:
+    dbglevel = 0
+
 version = "0.2.0"
+conf = {"version": version}
 plugin = "owncloudannex-" + version
 
-pwd = os.path.realpath(os.path.dirname(__file__))
-pwd = os.path.realpath(os.path.join(pwd, "git-annex-remote-owncloudannex"))
-pwd = pwd.replace("git-annex-remote-owncloudannex.py", "")
-pwd = pwd.replace("git-annex-remote-owncloudannex", "")
-sys.stderr.write("Path: " + repr(pwd) + "\n")
+pwd = os.path.realpath(__file__)
+pwd = pwd[:pwd.rfind("/")]
+if dbglevel:
+    sys.stderr.write("Path: " + repr(pwd) + "\n")
 
 sys.path.append(pwd + '/lib')
 
-import davlib
-
-if "--dbglevel" in sys.argv:
-    dbglevel = int(sys.argv[sys.argv.index("--dbglevel") + 1])
-else:
-    dbglevel = 10
-
 import CommonFunctions as common
+
+import davlib
 client = False
 encAuth = False
 
@@ -54,28 +54,76 @@ def login(user, pword):
         common.log("Failure, couldn't properly login: " + test, 1)
         return False
 
+class CancelledError(Exception):
+    def __init__(self, msg):
+        self.msg = msg
+        Exception.__init__(self, msg)
+
+    def __str__(self):
+        return self.msg
+
+    __repr__ = __str__
+
+class BufferReader(io.BytesIO):
+    def __init__(self, buf=b'',
+                 callback=None,
+                 cb_args=(),
+                 cb_kwargs={}):
+        self._callback = callback
+        self._cb_args = cb_args
+        self._cb_kwargs = cb_kwargs
+        self._progress = 0
+        self._len = len(buf)
+        io.BytesIO.__init__(self, buf)
+
+    def __len__(self):
+        return self._len
+
+    def read(self, n=-1):
+        chunk = io.BytesIO.read(self, n)
+        self._progress += int(len(chunk))
+        self._cb_kwargs.update({
+            'size'    : self._len,
+            'progress': self._progress
+        })
+        if self._callback:
+            try:
+                self._callback(*self._cb_args, **self._cb_kwargs)
+            except: # catches exception from the callback
+                raise CancelledError('The upload was cancellede.')
+        return chunk
+
 def postFile(subject, filename, folder):
-    common.log("%s to %s - %s" % ( filename, folder[0], subject))
+    common.log("%s to %s - %s" % ( repr(filename), folder[0], subject))
     
     tmp_file = findInFolder(subject, folder)
     if tmp_file:
         common.log("File already exists: " + repr(tmp_file))
         return True
 
-    base = conf["url"][conf["url"].find("/", 8):]
-    tpath = ("%s%s%s" % (base, folder, subject)).replace("//", "/")
+    base = conf["url"]
+    tpath = ("%s%s%s" % (base, folder, subject)).replace("//", "/").replace(":/", "://")
     common.log("tpath: " + repr(tpath))
-    response = False
-    with open(filename, "rb") as fh:
+
+    data = common.readFile(filename, 'rb')
+    fh = BufferReader(data, common.progress)
+
+    try:
         response = client.put(tpath, fh, "application/octet-stream", None, encAuth)
-        #  Hook in stdout "PROGRESS bytes"
+    except Exception as e:
+        common.log("Exception: " + repr(e), -1)
+        return False
 
     if response:
         cont = response.read()
         if response.status == 201:
             common.log("Done: " + repr(cont))
             return True
-    common.log("Failure")
+        if response.status == 413:
+            common.log("Error. Filesize too big")
+            common.updateWanted(os.path.getsize(filename) - 200000, False)
+            return False
+    common.log("Failure: " + repr(response.read()) + " - " + repr(response.status), -1)
     return False
 
 def findInFolder(subject, folder="/"):
@@ -86,7 +134,16 @@ def findInFolder(subject, folder="/"):
     base = conf["url"][conf["url"].find("/", 8):]
     tpath = (base + folder).replace("//", "/")
     tpath = tpath[:len(tpath)-1]
-    bla = client.propfind(tpath, depth=1, extra_hdrs=encAuth)
+    try:
+        bla = client.propfind(tpath, depth=1, extra_hdrs=encAuth)
+    except Exception as e:
+        common.log("Exception: " + repr(e))
+        try:
+            login(conf["uname"], conf["pword"])
+            bla = client.propfind(tpath, depth=1, extra_hdrs=encAuth)
+        except Exception as e:
+            common.log("Exception2: " + repr(e))
+
     content = bla.read()
     content = content.replace("<D:", "<d:").replace("</D:", "</d:") # Box.com fix
     common.log("propfind: " + tpath + " - " + repr(content))
@@ -114,19 +171,74 @@ def checkFile(subject, folder):
     return tmp_file
 
 def getFile(subject, filename, folder):
-    common.log(subject)
+    common.log(subject + " - " + folder + " - " + repr(filename))
     global m
 
+    def p_read(amt=None):
+        if response.fp is None:
+            return ''
+
+        if response._method == 'HEAD':
+            response.close()
+            return ''
+
+        if response.chunked:
+            return response._read_chunked(amt)
+
+        if amt is None:
+            # unbounded read     
+            if response.length is None:
+                s = response.fp.read()
+                common.log("READING fp", 2)
+            else:
+                s = ""
+                common.log("READING : " + repr(response.length), 2)
+                chunksize = response.length / 100
+                if chunksize < 4096:
+                    chunksize = 4096
+                while len(s) < response.length:
+                    common.log("READING : " + repr(response.length) + " - " + repr(len(s)), 3)
+                    tsize = response.length - len(s)
+                    if tsize > chunksize:
+                        tsize = chunksize
+                    s += response._safe_read(tsize)
+                    common.progress(response.length, len(s))
+                response.length = 0
+            response.close()        # we read everything     
+            return s
+
+        if response.length is not None:
+            if amt > response.length:
+                # clip the read to the "end of response"        
+                amt = response.length
+
+        # we do not use _safe_read() here because this may be a .will_close     
+        # connection, and the user is reading more bytes than will be provided  
+        # (for example, reading in 1k chunks)                                   
+        s = response.fp.read(amt)
+        if response.length is not None:
+            response.length -= len(s)
+            if not response.length:
+                response.close()
+        return s
+
+
+    
     tmp_file = findInFolder(subject, folder)
     if tmp_file:
         base = conf["url"][conf["url"].find("/", 8):]
         tmp_file = (base + tmp_file).replace("//", "/")
         common.log("tmp_file: " + repr(tmp_file))
         response = client.get(tmp_file, encAuth)
+
         if response.status == 200:
+            common.log("Getting data")
+            response.org_read = response.read
+            response.read = p_read
             cont = response.read()
+            response.read = response.org_read
             common.log("Got data: " + repr(len(cont)))
-            saveFile(filename, cont, "wb")
+            common.saveFile(filename, cont, "wb")
             common.log("Done")
             return True
     common.log("Failure")
@@ -148,29 +260,6 @@ def deleteFile(subject, folder):
     common.log("Failure")
     return False
 
-def readFile(fname, flags="r"):
-    common.log(repr(fname) + " - " + repr(flags))
-
-    if not os.path.exists(fname):
-        common.log("File doesn't exist")
-        return False
-    d = ""
-    try:
-        t = open(fname, flags)
-        d = t.read()
-        t.close()
-    except Exception as e:
-        common.log("Exception: " + repr(e), -1)
-
-    common.log("Done")
-    return d
-
-def saveFile(fname, content, flags="w"):
-    common.log(fname + " - " + str(len(content)) + " - " + repr(flags))
-    t = open(fname, flags)
-    t.write(content)
-    t.close()
-    common.log("Done")
 
 def createFolder(path):
     common.log(path)
@@ -189,15 +278,10 @@ def createFolder(path):
         return path
     common.log("Failure: " + repr(res.status) + " - " + repr(content))
 
-def sprint(txt):
-    sys.stdout.write(txt + "\n")
-    sys.stdout.flush()
-
 def setFolder(base, keys):
     common.log(repr(base) + " - " + repr(keys))
     folder = findInFolder(base)
     keys = keys.replace("VALUE ", "").split("/")
-    common.log("BLA2: " + repr(base) + " - " + repr(keys))
     if folder:
         common.log("Using folder: " + repr(folder))
         ANNEX_FOLDER = folder + "/"
@@ -226,106 +310,91 @@ def setFolder(base, keys):
         ANNEX_FOLDER = folder + "/"
     return ANNEX_FOLDER
 
-def main():
-    global conf
-    conf = {}
-    args = sys.argv
-    common.log("ARGS: " + repr(" ".join(args)))
+## gaproto interface
 
-    sprint("VERSION 1")
+def initremote(line):
+    common.log("")
+    uname = os.getenv("USERNAME") or ""
+    pword = os.getenv("PASSWORD") or ""
 
-    line = "initial"
-    while len(line):
-        line = sys.stdin.readline()
-	if line:
-            line = line.strip().replace("\n", "").split(" ")
-            if len(line) == 0:
-                common.log("Error, got empty line")
-                continue
+    url = common.getConfig("url")
+    myfolder = common.getConfig("folder")
+    encryption = common.getConfig("encryption")
 
-            if line[0] == "INITREMOTE":
-                uname = os.getenv("MYLOGIN") or ""
-                pword = os.getenv("MYPASSWORD") or ""
-                url = os.getenv("MYURL") or ""
-                myfolder = os.getenv("MYFOLDER") or ""
-                if len(uname) and len(pword) and len(url) and len(myfolder):
-                    sprint('SETCREDS mycreds ' + uname + ' ' + pword)
-                    sprint('SETCONFIG url ' + url + '')
-                    sprint('SETCONFIG myfolder ' + myfolder + '')
-                    sprint('INITREMOTE-SUCCESS')
-                else:
-                    sprint('INITREMOTE-FAILURE "You need to set MYPASSWORD, MYLOGIN and MYURL, MYFOLDER environment variables when running initremote."')
-                    sys.exit(1)
-            elif line[0] == "PREPARE":
-                # Use GETCONFIG to get configuration settings,
-                # and do anything needed to get ready for using the
-                # special remote here.
-                sprint('GETCREDS mycreds')
-                creds = sys.stdin.readline().replace("\n", "")
-                creds = creds.split(" ")
-                common.log("Got creds: " + repr(creds))
+    if len(uname) and len(pword) and len(url) and len(myfolder):
+        common.sprint('SETCREDS mycreds ' + uname + ' ' + pword)
+        common.sprint('INITREMOTE-SUCCESS')
+    else:
+        common.sprint('INITREMOTE-FAILURE You need to set USERNAME and PASSWORD environment variables and folder, url and encryption parameters when running initremote.')
+    common.log("Done")
 
-                sprint('GETCONFIG url')
-                url = sys.stdin.readline().replace("\n", "")
-                url = url.split(" ")
-                common.log("Got url: " + repr(url))
+def prepare(line):
+    common.log("")
+    creds = common.getCreds()
 
-                sprint('GETCONFIG myfolder')
-                myfolder = sys.stdin.readline().replace("\n", "")
-                myfolder = myfolder.split(" ")
-                common.log("Got myfolder: " + repr(myfolder))
+    url = common.getConfig("url")
+    myfolder = common.getConfig("folder")
+    encryption = common.getConfig("encryption")
 
-                if len(creds) > 2 and len(url) > 1 and len(myfolder) > 1:
-                    conf["uname"] = creds[1]
-                    conf["pword"] = creds[2]
-                    conf["url"] = url[1]
-                    conf["folder"] = myfolder[1]
-                    if login(conf["uname"], conf["pword"]):
-                        sprint('PREPARE-SUCCESS')
-                    else:
-                        sprint('PREPARE-FAILURE')
-                else:
-                    sprint('PREPARE-FAILURE')
-            elif line[0] == "TRANSFER":
-                sprint("DIRHASH " + line[2])
-                folder = setFolder(conf["folder"], sys.stdin.readline().replace("\n", ""))
+    if len(creds) > 2 and len(url) and len(myfolder) and ( len(creds[1]) and len(creds[2])):
+        conf["uname"] = creds[1]
+        conf["pword"] = creds[2]
+        conf["url"] = url
+        conf["folder"] = myfolder
+        common.updateWanted(False, False)
+        common.sprint('DEBUG ' + plugin)
+        if login(creds[1], creds[2]):
+            common.sprint('PREPARE-SUCCESS')
+        else:
+            common.sprint('PREPARE-FAILURE Login failure.')
+    else:
+        common.sprint('PREPARE-FAILURE You need to set USERNAME and PASSWORD environment variables and folder, url and encryption parameters for the remote.')
+    common.log("")
+def transfer(line):
+    common.log(repr(line))
+    folder = setFolder(conf["folder"], common.ask("DIRHASH " + line[2]))
 
-                if line[1] == "STORE":
-                    common.log("BLA: " + repr(line))
-                    if postFile(line[2], line[3], folder):
-                        sprint('TRANSFER-SUCCESS STORE ' + line[2] + '')
-                    else:
-                        sprint('TRANSFER-FAILURE STORE ' + line[2] + ' File could not be stored')
-                if line[1] == "RETRIEVE":
-                    common.log("BLA: " + repr(line))
-                    if getFile(line[2], line[3], folder):
-                        sprint('TRANSFER-SUCCESS RETRIEVE ' + line[2] + '')
-                    else:
-                        sprint('TRANSFER-FAILURE RETRIEVE ' + line[2] + ' File could not be retrieved')
-            elif line[0] == "CHECKPRESENT":
-                sprint("DIRHASH " + line[1])
-                folder = setFolder(conf["folder"], sys.stdin.readline().replace("\n", ""))
-                if not len(folder):
-                    sprint('CHECKPRESENT-UNKNOWN ' + line[1] + ' this remote is not currently available')
-                    continue
+    if line[1] == "STORE":
+        if postFile(line[2], " ".join(line[3:]), folder):
+            common.sprint('TRANSFER-SUCCESS STORE ' + line[2] + '')
+        else:
+            common.sprint('TRANSFER-FAILURE STORE ' + line[2] + ' File could not be stored')
+    if line[1] == "RETRIEVE":
+        if getFile(line[2], " ".join(line[3:]), folder):
+            common.sprint('TRANSFER-SUCCESS RETRIEVE ' + line[2] + '')
+        else:
+            common.sprint('TRANSFER-FAILURE RETRIEVE ' + line[2] + ' File could not be retrieved')
+    common.log("Done")
 
-                if checkFile(line[1], folder):
-                    sprint('CHECKPRESENT-SUCCESS ' + line[1] + '')
-                else:
-                    sprint('CHECKPRESENT-FAILURE ' + line[1] + '')
-            elif line[0] == "REMOVE":
-                sprint("DIRHASH " + line[1])
-                folder = setFolder(conf["folder"], sys.stdin.readline().replace("\n", ""))
+def checkpresent(line):
+    common.log("")
+    folder = setFolder(conf["folder"], common.ask("DIRHASH " + line[1]))
+    if not len(folder):
+        common.sprint('CHECKPRESENT-UNKNOWN ' + line[1] + ' this remote is not currently available')
+        return None
 
-                if deleteFile(line[1], folder):
-                    sprint('REMOVE-SUCCESS ' + line[1] + '')
-                else:
-                    sprint('REMOVE-FAILURE ' + line[1] + ' This file could not be removed')
-            else:
-                sprint('UNSUPPORTED-REQUEST')
+    if checkFile(line[1], folder):
+        common.sprint('CHECKPRESENT-SUCCESS ' + line[1] + '')
+    else:
+        common.sprint('CHECKPRESENT-FAILURE ' + line[1] + '')
+    common.log("Done")
+
+def remove(line):
+    common.log("")
+    folder = setFolder(conf["folder"], common.ask("DIRHASH " + line[1]))
+
+    if deleteFile(line[1], folder):
+        common.sprint('REMOVE-SUCCESS ' + line[1] + '')
+    else:
+        common.sprint('REMOVE-FAILURE ' + line[1] + ' This file could not be removed')
+    common.log("Done")
+
+def getCost():
+    common.log("", 3)
+    common.sprint("COST 150")
 
 t = time.time()
 common.log("START")
 if __name__ == '__main__':
-    main()
+    common.startRemote()
 common.log("STOP: %ss" % int(time.time() - t))
