@@ -1,4 +1,4 @@
-owncloudannex
+owncloudannex 0.2.1
 =========
 
 Hook program for gitannex to use owncloud as backend

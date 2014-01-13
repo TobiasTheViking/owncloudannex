@@ -17,7 +17,7 @@ try:
 except:
     dbglevel = 0
 
-version = "0.2.0"
+version = "0.2.1"
 conf = {"version": version}
 plugin = "owncloudannex-" + version
 
@@ -33,6 +33,7 @@ import CommonFunctions as common
 import davlib
 client = False
 encAuth = False
+cache = {}
 
 def login(user, pword):
     common.log("")
@@ -134,6 +135,15 @@ def findInFolder(subject, folder="/"):
     base = conf["url"][conf["url"].find("/", 8):]
     tpath = (base + folder).replace("//", "/")
     tpath = tpath[:len(tpath)-1]
+
+    tmp_path = (base + folder + subject).replace("//", "/")
+    global cache
+    if tmp_path in cache:
+        common.log("Returning from cache")
+        return cache[tmp_path]
+    else:
+	common.log("No match in cache")
+
     try:
         bla = client.propfind(tpath, depth=1, extra_hdrs=encAuth)
     except Exception as e:
@@ -146,18 +156,25 @@ def findInFolder(subject, folder="/"):
 
     content = bla.read()
     content = content.replace("<D:", "<d:").replace("</D:", "</d:") # Box.com fix
-    common.log("propfind: " + tpath + " - " + repr(content))
+    common.log("propfind: " + tpath + " - " + repr(content), 2)
 
     for tmp_file in common.parseDOM(content, "d:href"):
         tmp_file = urllib.unquote_plus(tmp_file)
         tmp_file = tmp_file.replace(host, "")
-        tmp_path = (base + folder +  subject).replace("//", "/")
+        common.log("folder1: " + tmp_file + " - " + tmp_path, 3)
+	if tmp_file[len(tmp_file) - 1] == "/":
+	   tmp_file = tmp_file[:len(tmp_file) - 1]
+        cache[tmp_file] = tmp_file.replace(base, "/")
+
+    common.log("Updated cache: " + repr(cache), 3)
+    for tmp_file in cache.keys():
         common.log("folder: " + tmp_file + " - " + tmp_path, 3)
-        if tmp_file == tmp_path or tmp_file == tmp_path + "/":
-            tmp_file = folder + subject
-            common.log("Done: " + repr(tmp_file))
-            return tmp_file
+    	if tmp_file == tmp_path:
+            common.log("Done: " + repr(cache[tmp_file]))
+            return cache[tmp_file]
+
     common.log("Failure")
+    return False
 
 def checkFile(subject, folder):
     common.log(subject)
@@ -221,8 +238,6 @@ def getFile(subject, filename, folder):
             if not response.length:
                 response.close()
         return s
-
-
     
     tmp_file = findInFolder(subject, folder)
     if tmp_file:
@@ -280,8 +295,9 @@ def createFolder(path):
 
 def setFolder(base, keys):
     common.log(repr(base) + " - " + repr(keys))
-    folder = findInFolder(base)
     keys = keys.replace("VALUE ", "").split("/")
+
+    folder = findInFolder(base)
     if folder:
         common.log("Using folder: " + repr(folder))
         ANNEX_FOLDER = folder + "/"
